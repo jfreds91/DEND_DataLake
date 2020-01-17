@@ -1,10 +1,12 @@
+# to submit... https://knowledge.udacity.com/questions/46619
+
 import configparser
 from datetime import datetime
 import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import udf, col
+from pyspark.sql.functions import udf, col, to_date, monotonically_increasing_id
 from pyspark.sql.functions import year, month, dayofmonth, hour, weekofyear, date_format
-
+from pyspark.sql.types import TimestampType, DateType
 
 
 config = configparser.ConfigParser()
@@ -23,85 +25,114 @@ def create_spark_session():
     return spark
 
 
-def process_song_data(spark, song_input_data, output_data):
-    # get filepath to song data file
-    #song_data = input_data + 'song_data'
-    '''    
-    # specify song schema
-    song_schema = StructType([
-        StructField('num_songs', IntegerType()),
-        StructField('artist_id', StringType()),
-        StructField('artist_lat', StringType()),
-        StructField('artist_long', StringType()),
-        StructField('artist_loc', StringType()),
-        StructField('artist_name', StringType()),
-        StructField('song_id', StringType()),
-        StructField('title', StringType()),
-        StructField('duration', FloatType()),
-        StructField('year', IntegerType())
-    ])
+def process_all_data(spark, song_input_data, log_input_data, output_data):
     '''
+    This function reads in song json data from the song_input_data location,
+    transforms it into fact and dimension tables, and then saves it back to the 
+    output_data location.
+    
+    INPUTS:
+        spark (SparkSession): Spark session
+        song_input_data (String): read location for song json data
+        output_data (String): write location for song table data
+    RETURNS:
+        none
+    '''
+    print('##### PROCESSING SONG DATA #####')
     
     # read song data file
-    df = spark.read.json(song_input_data)
-                         #schema=song_schema)
-    df.printSchema()
-    df.head()
-    
-    '''
+    df_song = spark.read.json(song_input_data) \
+        .withColumnRenamed('artist_latitude', 'latitude') \
+        .withColumnRenamed('artist_longitude', 'longitude') \
+        .withColumnRenamed('artist_location', 'location') \
+        .withColumnRenamed('artist_name', 'name')
+    df_song.printSchema()
 
     # extract columns to create songs table
-    songs_table = 
+    # song_id, title, artist_id, year, duration
+    songs_table = df_song.select('song_id', 'title', 'artist_id', 'year', 'duration')
     
     # write songs table to parquet files partitioned by year and artist
-    songs_table
+    print(f'writing {output_data}songs_table')
+    songs_table.write.mode('overwrite').partitionBy('year', 'artist_id').parquet(f'{output_data}songs_table')
 
     # extract columns to create artists table
-    artists_table = 
+    # artist_id, name, location, latitude, longitude
+    artists_table = df_song.select('artist_id', 'name', 'location', 'latitude', 'longitude')
     
     # write artists table to parquet files
-    artists_table
-    '''
-'''
-def process_log_data(spark, input_data, output_data):
-    # get filepath to log data file
-    log_data =
+    print(f'writing {output_data}artists_table')
+    artists_table.write.mode('overwrite').parquet(f'{output_data}artists_table')
+    
+    print('##### PROCESSING LOG DATA #####')
 
     # read log data file
-    df = 
+    df_log = spark.read.json(log_input_data) \
+        .withColumnRenamed('userId', 'user_id') \
+        .withColumnRenamed('firstName', 'first_name') \
+        .withColumnRenamed('lastName', 'last_name') \
+        .withColumnRenamed('sessionId', 'session_id') \
+        .withColumnRenamed('userAgent', 'user_agent') \
+        .withColumnRenamed('location', 'user_location')
+    df_log.printSchema()
     
     # filter by actions for song plays
-    df = 
+    df_log = df_log.where("page = 'NextSong'")
 
-    # extract columns for users table    
-    artists_table = 
+    # extract columns for users table
+    # user_id, first_name, last_name, gender, level
+    users_table = df_log.select('user_id', 'first_name', 'last_name', 'gender', 'level')
     
     # write users table to parquet files
-    artists_table
-
+    print(f'writing {output_data}users_table')
+    users_table.write.mode('overwrite').parquet(f'{output_data}users_table')
+    
+    print('##### CREATING CUSTOM TIMESTAMP AND DATETIME COLUMNS #####')
     # create timestamp column from original timestamp column
-    get_timestamp = udf()
-    df = 
+    @udf(TimestampType())
+    def get_timestamp(x):
+        return datetime.fromtimestamp(x/1000.0)
+    df_log = df_log.withColumn('ts_timestamp', get_timestamp('ts'))
     
     # create datetime column from original timestamp column
-    get_datetime = udf()
-    df = 
+    df_log = df_log.withColumn('ts_datetime', col("ts_timestamp").cast(DateType()))
     
     # extract columns to create time table
-    time_table = 
+    # start_time, hour, day, week, month, year, weekday
+    time_table = df_log.selectExpr("ts_timestamp as start_time")
+    time_table = time_table.withColumn('hour', hour('start_time')) \
+        .withColumn('day', dayofmonth('start_time')) \
+        .withColumn('week', weekofyear('start_time')) \
+        .withColumn('month', month('start_time')) \
+        .withColumn('year', year('start_time')) \
+        .withColumn('weekday', date_format('start_time', 'u'))
     
     # write time table to parquet files partitioned by year and month
-    time_table
+    print(f'writing {output_data}time_table')
+    time_table.write.mode('overwrite').partitionBy('year', 'month').parquet(f'{output_data}time_table')
+    
+    # join datasets
+    df_joined = df_log.join(df_song, (df_log.artist == df_song.name) & (df_log.song == df_song.title)) \
+        .withColumn("songplay_id", monotonically_increasing_id())
+    
+    print('df_joined schema:')
+    df_joined.printSchema()
 
-    # read in song data to use for songplays table
-    song_df = 
-
-    # extract columns from joined song and log datasets to create songplays table 
-    songplays_table = 
+    # extract columns from joined song and log datasets to create songplays table
+    # songplay_id, start_time, user_id, level, song_id, artist_id, session_id, location, user_agent
+    songplays_table = df_joined.select('songplay_id', 'ts_timestamp', 'user_id', 'level', 'song_id', 'artist_id', 'session_id', 'user_location', 'user_agent') \
+        .withColumnRenamed('ts_timestamp', 'start_time') \
+        .withColumn('month', month('start_time')) \
+        .withColumn('year', year('start_time'))
 
     # write songplays table to parquet files partitioned by year and month
-    songplays_table
-'''
+    print(f'writing {output_data}songplays_table')
+    songplays_table.write.mode('overwrite').partitionBy('year', 'month').parquet(f'{output_data}songplays_table')
+    
+
+#def process_log_data(spark, song_input_data, log_input_data, output_data):
+
+
 
 def main():
     
@@ -111,25 +142,24 @@ def main():
         # mkdir more
         # sudo apt-get install unzip
         # unzip song-data.zip -d more
-        # unzip log-data.zip -d more
+        # unzip log-data.zip -d more/log_data
     test_mode = True
     
     if test_mode:
         print('##### RUNNING IN TEST MODE WITH LOCAL FILES #####')
         song_input_data = "data/more/song_data/*/*/*/*.json"
         log_input_data = "data/more/log_data/*.json"
+        output_data = "data/more/"
     else:
         song_input_data = "s3a://udacity-dend/song_data/*/*/*/*.json"
         log_input_data = "s3a://udacity-dend/log_data/*.json"
+        output_data = "s3a://udacity-dend/"
         
     print('##### CREATING SPARK SESSION #####')
     spark = create_spark_session()
-    input_data = ""
-    output_data = ""
     
-    print('##### PROCESSING SONG DATA #####')
-    process_song_data(spark, song_input_data, output_data)    
-    #process_log_data(spark, log_input_data, output_data)
+    process_all_data(spark, song_input_data, log_input_data, output_data)    
+    #process_log_data(spark, song_input_data, log_input_data, output_data)
 
 
 if __name__ == "__main__":
