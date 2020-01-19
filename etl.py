@@ -45,7 +45,8 @@ def process_all_data(spark, song_input_data, log_input_data, output_data):
         .withColumnRenamed('artist_latitude', 'latitude') \
         .withColumnRenamed('artist_longitude', 'longitude') \
         .withColumnRenamed('artist_location', 'location') \
-        .withColumnRenamed('artist_name', 'name')
+        .withColumnRenamed('artist_name', 'name') \
+        .dropDuplicates()
     df_song.printSchema()
 
     # extract columns to create songs table
@@ -77,7 +78,7 @@ def process_all_data(spark, song_input_data, log_input_data, output_data):
     df_log.printSchema()
     
     # filter by actions for song plays
-    df_log = df_log.where("page = 'NextSong'")
+    df_log = df_log.where("page = 'NextSong'").dropDuplicates()
 
     # extract columns for users table
     # user_id, first_name, last_name, gender, level
@@ -143,7 +144,7 @@ def main():
         # sudo apt-get install unzip
         # unzip song-data.zip -d more
         # unzip log-data.zip -d more/log_data
-    test_mode = True
+    test_mode = False
     
     if test_mode:
         print('##### RUNNING IN TEST MODE WITH LOCAL FILES #####')
